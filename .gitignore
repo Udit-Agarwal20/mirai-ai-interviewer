@@ -1,0 +1,80 @@
+# macOS and local editor files
+.DS_Store
+*.swp
+*.swo
+
+# JavaScript / TypeScript dependencies and generated output
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+.vercel/
+
+# Python environments, bytecode, and tool caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Local configuration and credentials; safe templates remain trackable
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.template
+.envrc
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Test output and coverage (keep test source and public fixtures)
+coverage/
+.coverage
+.coverage.*
+htmlcov/
+playwright-report/
+test-results/
+
+# Local database files and transient output
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+logs/
+.cache/
+tmp/
+temp/
+
+# Private capture/evaluation data; deliberately avoid blanket audio exclusions
+/recordings/
+/private-data/
+/private-fixtures/
+/evaluation-artifacts/
+**/test-data/private/
+**/fixtures/private/
+
+# Local browser automation artifacts
+.playwright-mcp/

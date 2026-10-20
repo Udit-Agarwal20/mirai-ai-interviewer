@@ -1,0 +1,27 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #15243b; background: #f6f8fc; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 780px; margin: 0 auto; padding: 40px 24px; }
+header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 42px; flex-wrap: wrap; }
+.brand { color: #3557d4; letter-spacing: .18em; font-weight: 800; }
+.badge { background: #e9eeff; color: #3557d4; padding: 8px 12px; border-radius: 999px; font-size: .8rem; }
+h1 { font-size: clamp(1.8rem, 5vw, 2.6rem); letter-spacing: -.04em; margin: 0 0 12px; }
+h2 { margin: 0 0 16px; font-size: 1.1rem; }
+p, li, label { line-height: 1.6; }
+.intro { color: #60728a; margin-bottom: 30px; }
+section { background: white; border: 1px solid #dde5f0; border-radius: 16px; padding: 24px; margin: 16px 0; }
+.status { font-weight: 650; color: #936112; }
+.consent { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+input { width: 20px; height: 20px; flex-shrink: 0; margin-top: 4px; accent-color: #3557d4; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 16px; }
+button { border: 1px solid #3557d4; border-radius: 8px; padding: 12px 18px; background: #3557d4; color: white; font: inherit; font-weight: 600; cursor: pointer; }
+button.secondary { background: white; color: #3557d4; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+:focus-visible { outline: 3px solid #936112; outline-offset: 4px; }
+ul { padding-left: 20px; }
+li { margin: 16px 0; }
+code { overflow-wrap: anywhere; }
+.note, footer { color: #60728a; font-size: .9rem; }
+footer { padding: 16px 0; }
+input[type=password] { width: 100%; height: 40px; margin: 8px 0 16px; padding: 8px; }
+pre { overflow: auto; max-height: 300px; font-size: .75rem; }

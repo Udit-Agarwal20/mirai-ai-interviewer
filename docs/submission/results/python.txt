@@ -1,0 +1,33 @@
+test_credentials_never_enable_calls_or_leak_values (test_foundation.FoundationTests.test_credentials_never_enable_calls_or_leak_values) ... ok
+test_missing_credentials_explain_names (test_foundation.FoundationTests.test_missing_credentials_explain_names) ... ok
+test_sdk_agent_constructs_without_providers_or_network (test_foundation.FoundationTests.test_sdk_agent_constructs_without_providers_or_network) ... ok
+test_usage_accumulates_attempts_without_mixing_sources (test_foundation.FoundationTests.test_usage_accumulates_attempts_without_mixing_sources) ... ok
+test_usage_is_unknown_until_measured (test_foundation.FoundationTests.test_usage_is_unknown_until_measured) ... ok
+test_usage_rejects_invalid_observations (test_foundation.FoundationTests.test_usage_rejects_invalid_observations) ... ok
+test_whitespace_credentials_are_missing (test_foundation.FoundationTests.test_whitespace_credentials_are_missing) ... ok
+test_latest_cumulative_llm_usage_counted_once (test_integration.CleanupRegressionTests.test_latest_cumulative_llm_usage_counted_once) ... ok
+test_startup_interrupt_error_does_not_prevent_deletion (test_integration.CleanupRegressionTests.test_startup_interrupt_error_does_not_prevent_deletion) ... ok
+test_default_and_expired_approval_block (test_integration.ConfigurationTests.test_default_and_expired_approval_block) ... ok
+test_missing_and_invalid_configuration (test_integration.ConfigurationTests.test_missing_and_invalid_configuration) ... ok
+test_official_adapter_construction_is_offline_and_no_recording (test_integration.ConfigurationTests.test_official_adapter_construction_is_offline_and_no_recording) ... ok
+test_unauthorized_remote_host_origin_or_owner_denied (test_integration.HTTPGuardTests.test_unauthorized_remote_host_origin_or_owner_denied) ... ok
+test_all_provider_errors_end_and_cleanup_without_retry (test_integration.LifecycleTests.test_all_provider_errors_end_and_cleanup_without_retry) ... ok
+test_cancelled_start_still_cleans_up (test_integration.LifecycleTests.test_cancelled_start_still_cleans_up) ... ok
+test_consent_preflight_and_default_disabled (test_integration.LifecycleTests.test_consent_preflight_and_default_disabled) ... ok
+test_start_duplicate_owner_stop_and_single_use (test_integration.LifecycleTests.test_start_duplicate_owner_stop_and_single_use) ... ok
+test_startup_failure_and_cleanup_failure_are_visible (test_integration.LifecycleTests.test_startup_failure_and_cleanup_failure_are_visible) ... ok
+test_timeout_and_browser_loss_cleanup (test_integration.LifecycleTests.test_timeout_and_browser_loss_cleanup) ... ok
+test_failures_sanitized (test_integration.PolicyTests.test_failures_sanitized) ... ok
+test_interim_final_duplicate_handling_and_stt_failure (test_integration.PolicyTests.test_interim_final_duplicate_handling_and_stt_failure) ... ok
+test_llm_adapts_only_to_fixture_and_failure_never_reaches_tts (test_integration.PolicyTests.test_llm_adapts_only_to_fixture_and_failure_never_reaches_tts) ... ok
+test_maximum_turns_and_bounded_followups (test_integration.PolicyTests.test_maximum_turns_and_bounded_followups) ... ok
+test_tts_failure_and_turn_limit_callback (test_integration.PolicyTests.test_tts_failure_and_turn_limit_callback) ... ok
+test_room_lifecycle_no_recording_explicit_models_and_cleanup (test_integration.RuntimeWiringTests.test_room_lifecycle_no_recording_explicit_models_and_cleanup) ... ok
+test_usage_estimate_unknown_until_provider_observations (test_integration.RuntimeWiringTests.test_usage_estimate_unknown_until_provider_observations) ... ok
+test_expired_and_elevated_token (test_integration.TokenTests.test_expired_and_elevated_token) ... ok
+test_scoped_token_and_wrong_room_identity (test_integration.TokenTests.test_scoped_token_and_wrong_room_identity) ... ok
+
+----------------------------------------------------------------------
+Ran 28 tests in 0.915s
+
+OK

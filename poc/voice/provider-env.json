@@ -1,0 +1,6 @@
+{
+  "LiveKit transport and Inference": ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"],
+  "Deepgram": ["DEEPGRAM_API_KEY"],
+  "Sarvam": ["SARVAM_API_KEY"],
+  "Local developer access": ["POC_CONTROL_SECRET", "POC_DEVELOPER_KEY"]
+}
