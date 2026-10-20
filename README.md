@@ -2,11 +2,30 @@
 
 **Adaptive technical vivas. Evidence-linked evaluation. Faculty-controlled assessment.**
 
-Mirai explores a more consistent, auditable way to conduct technical interviews. Faculty approve the questions, students follow a structured interview, and every evaluation can be inspected and revised with an attributable reason.
+Mirai is a technical viva prototype built around faculty oversight: approve the questions, follow each answer into the scoring evidence, and review or override a mark without losing its history. It addresses the challenge of making large-cohort assessments consistent and auditable.
 
 **Current release: a locally runnable prototype.** The complete offline workflow is tested using prewritten responses and a synthetic evaluator. A separate LiveKit voice integration is implemented behind explicit approval gates, but has **not** been verified with real providers.
 
-[Quick start](#quick-start) · [Walkthrough](#try-the-workflow) · [Architecture](docs/submission/ARCHITECTURE.md) · [Test Report](docs/submission/TEST_REPORT.md)
+[For judges](#for-hackathon-judges) · [Setup](#quick-start) · [Walkthrough](#try-the-workflow) · [Architecture](#architecture) · [Test Report](docs/submission/TEST_REPORT.md)
+
+## For Hackathon Judges
+
+**Try the complete offline review loop.** Requires Node.js ≥20.9, npm and Git; no Python, provider keys or `.env.local` are needed for the demo.
+
+```bash
+git clone https://github.com/Udit-Agarwal20/mirai-ai-interviewer.git
+cd mirai-ai-interviewer/poc/voice
+npm ci
+MIRAI_OFFLINE_DEMO=1 npm run dev
+```
+
+Open **http://127.0.0.1:3000/demo**. For PowerShell syntax and local-data behavior, see [setup notes](#quick-start).
+
+**Evaluate in 2–3 minutes:** create a workspace → approve the bank → continue to student → consent and start → choose prewritten answers → end the interview → open faculty review → follow a **Turn** evidence link → override a score with a reason. The original mark and audit history remain available.
+
+**Evidence:** [mandatory Test Report](docs/submission/TEST_REPORT.md) · [frontend results](docs/submission/results/frontend.txt) · [Python results](docs/submission/results/python.txt) · [five-minute demo script](docs/submission/DEMO_SCRIPT.md).
+
+**Scope:** the offline flow, clock, evidence validation and overrides are tested. Responses and evaluation are synthetic; no microphone or recording is used. Real provider-backed voice, real-model scoring validation and production-scale operation remain unverified.
 
 ## See the workflow
 
@@ -33,20 +52,22 @@ Mirai's prototype makes that review loop tangible. The concurrency target is a r
 | Session lifecycle | Server-authoritative offline deadline, visible phase clock and accelerated demonstration mode |
 | Evidence-grounded reporting | Canonical transcript, SHA-256 digest, validated evidence references and synthetic five-dimension scores |
 | Faculty oversight | Evidence navigation, original/effective marks, mandatory override reason and append-only audit events |
-| Voice integration | Experimental LiveKit → Deepgram → Gemini → Sarvam path; disabled and unverified end to end |
+
+The capabilities above are **verified offline**. The remaining product boundaries are:
+
+| Status | Scope |
+|---|---|
+| Experimental | LiveKit → Deepgram → Gemini → Sarvam integration; disabled and unverified end to end |
+| Not implemented for production | Student authentication, durable persistence, full audio recording and faculty playback |
+| Not benchmarked | Real-model scoring, speech accuracy/latency and 50/100/150 concurrent sessions |
 
 Developer fixture identities are not production login. Synthetic scores demonstrate the evaluation contract; they do not measure a student's ability.
 
 ## Quick start
 
-**Prerequisites:** Node.js ≥20.9, npm and Git. Python and provider keys are **not required** to run the offline demo. Installing dependencies on a fresh machine requires registry access.
+Use the [clone, install and launch commands above](#for-hackathon-judges). A fresh installation requires registry access; the offline demo needs no Python or provider keys.
 
-```bash
-git clone https://github.com/Udit-Agarwal20/mirai-ai-interviewer.git
-cd mirai-ai-interviewer/poc/voice
-npm ci
-MIRAI_OFFLINE_DEMO=1 npm run dev
-```
+Already installed? From `poc/voice`, run `MIRAI_OFFLINE_DEMO=1 npm run dev`.
 
 Open **http://127.0.0.1:3000/demo**. Use this exact loopback hostname and port: the development API rejects other origins. Stop with Ctrl-C.
 
@@ -75,10 +96,10 @@ The clock follows the official warm-up, fundamentals, depth, applied, wrap-up an
 
 ## Architecture
 
-### Working offline path
+### Verified offline workflow
 
 ```mermaid
-flowchart LR
+flowchart TD
     Faculty[Faculty fixture] --> Bank[Review and approve bank]
     Bank --> Consent[Student consent]
     Consent --> Session[Deterministic interview and server clock]
@@ -88,10 +109,10 @@ flowchart LR
     Review --> Result[Auditable effective result]
 ```
 
-### Separate experimental voice path
+### Experimental voice pipeline — not live-verified
 
 ```mermaid
-flowchart LR
+flowchart TD
     Browser[Browser microphone] --> LiveKit[LiveKit WebRTC]
     LiveKit --> Agent[Local Python Agent]
     Agent --> STT[Deepgram Nova-3]
@@ -140,7 +161,7 @@ See the [application runbook](poc/voice/README.md) for dependency setup and the 
 
 ## Testing
 
-From `poc/voice`, with dependencies installed:
+From `poc/voice`, after installing the frontend and test prerequisites below:
 
 ```bash
 npm run typecheck
@@ -161,9 +182,9 @@ npm test
 
 On Windows use `.venv\Scripts\python.exe` for Python tests; the current full Playwright supervisor command uses POSIX paths and is supported on macOS/Linux (or WSL). The browser demo itself does not need Python.
 
-Latest local verification: **64 frontend/domain/integration/browser tests and 28 Python tests passed**, plus TypeScript and production build. These counts include mocks and synthetic fixtures—not real voice sessions. The suite starts an unarmed loopback supervisor; it must not activate live providers. Keep ports 3000 and 8001 free when testing.
+The published verification logs record **64 frontend/domain/integration/browser tests and 28 Python tests passed**, plus [TypeScript](docs/submission/results/typecheck.txt) and [production build](docs/submission/results/build.txt). These counts include mocks and synthetic fixtures—not real voice sessions. The suite starts an unarmed loopback supervisor; it must not activate live providers. Keep ports 3000 and 8001 free when testing.
 
-Read the [mandatory Test Report](docs/submission/TEST_REPORT.md) and [raw results](docs/submission/results/frontend.txt) for scope and missing evidence.
+Read the [mandatory Test Report](docs/submission/TEST_REPORT.md) and raw [frontend](docs/submission/results/frontend.txt) / [Python](docs/submission/results/python.txt) results for scope and missing evidence.
 
 ## Project map
 
