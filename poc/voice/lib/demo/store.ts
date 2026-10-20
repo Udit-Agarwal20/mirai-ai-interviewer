@@ -11,12 +11,12 @@ function prune() {
  for(const [id,w] of store.workspaces) if(now-w.created_at>=3600000) store.workspaces.delete(id);
  for(const [token,e] of store.tokens) if(e.expires<=now||!store.workspaces.has(e.workspace.id)) store.tokens.delete(token);
 }
-export function newDemo() {
+export function newDemo(request:Request) {
  prune();if(store.workspaces.size>=40) throw new DemoError('Demo workspace capacity reached; restart the local server',409);
  const workspace=new DemoWorkspace();store.workspaces.set(workspace.id,workspace);
  const cookies=(['faculty','student'] as const).map(role=>{
   const token=randomBytes(32).toString('hex');store.tokens.set(token,{workspace,role,expires:Date.now()+3600000});
-  return `mirai_demo_${role}=${token}; HttpOnly; SameSite=Strict; Path=/api/demo/${role}; Max-Age=3600`;
+  return `mirai_demo_${role}=${token}; HttpOnly; SameSite=Strict; Path=/api/demo/${role}; Max-Age=3600${request.headers.get('host')==='127.0.0.1:3000'?'':'; Secure'}`;
  });
  return cookies;
 }

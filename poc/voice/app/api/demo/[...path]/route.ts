@@ -12,7 +12,7 @@ async function handle(request:Request, context:{params:Promise<{path:string[]}>}
    // Explicit developer launch creates both named fixture roles. Never accepts a requested role or identity.
    if((await request.text()).length) throw new DemoError('Setup accepts no fields');
    const response=json({status:'Demo workspace created; two developer fixtures, not production authentication'});
-   for(const cookie of newDemo()) response.headers.append('Set-Cookie',cookie);
+   for(const cookie of newDemo(request)) response.headers.append('Set-Cookie',cookie);
    return response;
   }
   if(path.length!==2 || !['faculty','student'].includes(path[0])) return json({error:'Demo route not found'},404);
