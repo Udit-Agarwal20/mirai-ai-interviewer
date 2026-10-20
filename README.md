@@ -43,6 +43,25 @@ The MSOT hackathon asks teams to support approximately 350 students taking 15-mi
 
 Mirai's prototype makes that review loop tangible. The concurrency target is a requirement to validate—not a measured capability of this release.
 
+<!-- MIRAI_PILOT_FEASIBILITY_START -->
+## MSOT pilot feasibility and cost (planning estimates)
+
+**350 students × 15 minutes = 5,250 interview minutes (87.5 hours).** At 150 simultaneous sessions, that is **three 15-minute slots (45 minutes)** plus login, changeover and recovery time; at 100 simultaneous sessions, it is **four slots (60 minutes)** before overhead. These are **capacity calculations, not demonstrated load-test results**.
+
+A transparent **illustrative hosted-agent/API model** estimates **~₹53 per 15-minute viva** in its planning case, using published reference rates and explicit usage/FX assumptions. This is **not a measured Mirai bill, provider quote or all-inclusive deployment budget**. Taxes, fixed plans, operations and extra infrastructure are excluded.
+
+| Cohort size | Planning-case variable cost | 15-minute slots at 150 concurrent |
+|---:|---:|---:|
+| 200 students | ~₹10,600 | 2 |
+| 250 students | ~₹13,250 | 2 |
+| 300 students | ~₹15,900 | 2 |
+| **350 students** | **~₹18,550** | **3** |
+
+**Deployment blockers:** the existing live PoC is not validated at scale; real recording, production authentication/storage and human-calibrated scoring remain incomplete. LiveKit Inference's published Build/Ship/Scale concurrency allowances are **5/20/50**; 150 needs an approved higher allowance or a different validated arrangement. **No 50/100/150 WebRTC load tests have been run.**
+
+**Judge evidence:** [two-page pilot brief (PDF)](docs/submission/PILOT_FEASIBILITY_BRIEF.pdf) · [pilot decision brief](docs/submission/PILOT_FEASIBILITY_BRIEF.md) · [itemized cost model, assumptions and sources](docs/submission/COST_SHEET.md) · [capacity/quotas, slot schedule and test protocol](docs/submission/CAPACITY_PLAN.md) · [executed tests and missing evidence](docs/submission/TEST_REPORT.md). All numerical estimates are clearly separated from measured results.
+<!-- MIRAI_PILOT_FEASIBILITY_END -->
+
 ## What works today
 
 | Capability | Current implementation |
@@ -229,8 +248,9 @@ No real recorded viva, production deployment, WER/latency benchmark or concurren
 | [Test Report](docs/submission/TEST_REPORT.md) | Executed checks and explicit evidence gaps |
 | [Demo script](docs/submission/DEMO_SCRIPT.md) | Five-minute synthetic workflow walkthrough |
 | [Sample bank and rubric](docs/submission/SAMPLE_BANK_AND_RUBRIC.md) | Runnable fixture references and scoring weights |
-| [Capacity plan](docs/submission/CAPACITY_PLAN.md) | Proposed validation; no capacity claim |
-| [Cost sheet](docs/submission/COST_SHEET.md) | Unmeasured inputs and calculation method |
+| [Capacity plan](docs/submission/CAPACITY_PLAN.md) | Cohort slot math, quota blockers, proposed scale test and no capacity claim |
+| [Cost sheet](docs/submission/COST_SHEET.md) | Itemized illustrative cost model for 200–350 students; not measured |
+| [Pilot feasibility brief](docs/submission/PILOT_FEASIBILITY_BRIEF.md) | Executive decision and evidence gaps |
 | [Privacy note](docs/submission/PRIVACY_NOTE.md) | Local data behavior and unresolved policy |
 
 ## Contributing and acknowledgments
