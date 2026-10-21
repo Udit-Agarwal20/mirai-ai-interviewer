@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import LivePanel from "./live-panel";
+import JudgePanel from "./judge-panel";
 
 type Health = {
   mode: string;
@@ -22,6 +23,10 @@ function microphoneError(error: unknown) {
 }
 
 export default function Page() {
+  if (process.env.NEXT_PUBLIC_POC_MODE === "hosted") {
+    return <JudgePanel />;
+  }
+
   const [consent, setConsent] = useState(false);
   const [preflight, setPreflight] = useState(false);
   const [state, setState] = useState<"off" | "requesting" | "active">("off");

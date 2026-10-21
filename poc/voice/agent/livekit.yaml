@@ -1,0 +1,5 @@
+# LiveKit Cloud Agent Deployment Configuration
+agent_name: mirai-judge-agent
+entrypoint: hosted_main.py
+language: python
+version: 1.8.8

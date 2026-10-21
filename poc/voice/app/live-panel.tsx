@@ -18,7 +18,7 @@ export default function LivePanel({preflight,releasePreflight}:{preflight:boolea
       else setMetrics(data);
     },audio.current!);
     client.current=live;
-    const leave=()=>{ void live.stop("Page left or hidden"); };
+    const leave=()=>{ void live.stop("Page hidden or navigation cancellation: session stopped."); };
     const hidden=()=>{if(document.hidden) leave();};
     window.addEventListener("pagehide",leave);
     document.addEventListener("visibilitychange",hidden);
@@ -34,6 +34,26 @@ export default function LivePanel({preflight,releasePreflight}:{preflight:boolea
     } catch { setDetail("Local access denied. Configure POC_DEVELOPER_KEY and POC_CONTROL_SECRET; never enter provider keys here."); }
   }
   const running=["connecting","connected","reconnecting","stopping"].includes(state);
+  const missingPrereqs: string[] = [];
+  if (!access) missingPrereqs.push("developer access");
+  if (!preflight) missingPrereqs.push("microphone check");
+  if (!consent) missingPrereqs.push("live consent");
+
+  function handleStart() {
+    if (running) return;
+    if (!access || !preflight || !consent) {
+      const missing: string[] = [];
+      if (!access) missing.push("developer access required");
+      if (!preflight) missing.push("microphone check required");
+      if (!consent) missing.push("live consent required");
+      setState("error");
+      setDetail(`Start click not dispatched: ${missing.join(", ")}.`);
+      return;
+    }
+    releasePreflight();
+    void client.current?.start(consent, preflight).catch(() => {});
+  }
+
   return <section aria-labelledby="live-heading">
     <h2 id="live-heading">Controlled live experiment</h2>
     <p>Developer-only HTTP idempotency fixture. One session, up to 120 seconds and five answers. ₹0 out-of-pocket limit; existing free credits only.</p>
@@ -43,8 +63,9 @@ export default function LivePanel({preflight,releasePreflight}:{preflight:boolea
       setConsent(e.target.checked);
       if(!e.target.checked) { releasePreflight(); void client.current?.stop("Live consent withdrawn"); }
     }} /><span>I consent to this developer voice test: audio passes through LiveKit to Deepgram; recognized answers go to LiveKit Inference and its Google model; Sarvam processes interviewer text to generate speech. This PoC does not save recordings or transcripts. Provider retention terms still apply. I will not share personal or student data.</span></label>
+    {missingPrereqs.length > 0 && !running && <p className="note" data-testid="live-prereq-hint">Prerequisites before starting: {missingPrereqs.join(", ")}.</p>}
     <div className="actions">
-      <button disabled={!consent || !preflight || !access || running} onClick={()=>{releasePreflight();void client.current?.start(consent,preflight);}}>Start approved live test</button>
+      <button disabled={!consent || !preflight || !access || running} onClick={handleStart}>Start approved live test</button>
       <button disabled={!running} onClick={()=>void client.current?.stop()}>End live test</button>
       <button disabled={state!=="connected"} onClick={()=>void client.current?.enablePlayback().catch(()=>setDetail("Playback is blocked by browser permissions."))}>Enable playback</button>
     </div>

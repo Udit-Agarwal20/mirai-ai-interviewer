@@ -1,0 +1,181 @@
+import { safeJson } from "../../../../../lib/access";
+import { getAdmissionStore, verifyJudgeCode } from "../../../../../lib/hosted-admission";
+import {
+  createHostedSession,
+  createJudgeSessionCapability,
+  stopHostedSession,
+  validateHostedRequest,
+  verifyJudgeSessionCapability,
+} from "../../../../../lib/hosted-session";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function getClientIdentifier(request: Request): string {
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) {
+    const parts = xff.split(",").map((s) => s.trim()).filter(Boolean);
+    if (parts.length > 0) {
+      // In trusted reverse-proxy topologies (Render), proxy appends verified client IP to the end.
+      const rightmost = parts[parts.length - 1];
+      if (/^[0-9a-fA-F:.]+$/.test(rightmost)) {
+        return rightmost;
+      }
+    }
+  }
+  return "unknown_client";
+}
+
+export async function POST(request: Request) {
+  const validation = validateHostedRequest(request);
+  if (!validation.valid) {
+    return safeJson({ error: validation.error ?? "unauthorized", message: "Request validation failed." }, validation.status ?? 403);
+  }
+
+  let body: { inviteCode?: string; consent?: boolean; preflight?: boolean };
+  try {
+    const raw = await request.text();
+    if (raw.length > 2048) {
+      return safeJson({ error: "payload_too_large", message: "Payload exceeds 2048 bytes." }, 400);
+    }
+    body = JSON.parse(raw);
+  } catch {
+    return safeJson({ error: "invalid_payload", message: "Malformed JSON payload." }, 400);
+  }
+
+  if (body.consent !== true || body.preflight !== true) {
+    return safeJson({
+      error: "consent_and_preflight_required",
+      message: "Microphone preflight and live consent are required before admission."
+    }, 400);
+  }
+
+  const inviteCode = body.inviteCode;
+  if (!inviteCode || typeof inviteCode !== "string") {
+    return safeJson({ error: "invalid_invitation_code", message: "Judge invitation code required." }, 403);
+  }
+
+  const store = getAdmissionStore();
+  const clientIdentifier = getClientIdentifier(request);
+
+  // 1. Enforce rate limiting BEFORE expensive admission work or code verification
+  const rateLimit = await store.checkRateLimit(clientIdentifier);
+  if (!rateLimit.allowed) {
+    const status = rateLimit.error === "too_many_failed_attempts" ? 429 : 503;
+    return safeJson({
+      error: rateLimit.error ?? "too_many_failed_attempts",
+      message: rateLimit.message ?? "Too many failed attempts. Try again later."
+    }, status);
+  }
+
+  // 2. Verify invitation code against provisioned salted hashes
+  const verification = verifyJudgeCode(inviteCode);
+  if (!verification.valid) {
+    const recordResult = await store.recordFailedAttempt(clientIdentifier);
+    if (recordResult.error === "store_unavailable") {
+      return safeJson({
+        error: "store_unavailable",
+        message: "Durable admission store unavailable. Service is in safe default-deny mode."
+      }, 503);
+    }
+    return safeJson({
+      error: "invalid_invitation_code",
+      message: "Invalid judge invitation code."
+    }, 403);
+  }
+
+  // 3. Atomic durable admission claim (max 1 per code, max 2 globally; fail-closed on outage)
+  const claim = await store.claimAdmission(verification.codeHash, verification.judgeLabel);
+  if (!claim.allowed) {
+    const status = claim.error === "store_unavailable" ? 503 : 409;
+    return safeJson({ error: claim.error, message: claim.message }, status);
+  }
+
+  // 4. Create room, dispatch agent worker, and generate short-lived token
+  try {
+    const session = await createHostedSession(claim.judgeId);
+
+    // 5. Generate cryptographically signed session capability cookie
+    let capability;
+    try {
+      capability = createJudgeSessionCapability(claim.judgeId, session.room);
+    } catch (err: any) {
+      // If session capability creation fails due to unconfigured secret, clean up and fail closed
+      await stopHostedSession(session.room);
+      return safeJson({
+        error: "session_signing_unavailable",
+        message: "Session signing secret unconfigured or invalid. Service is in fail-closed mode."
+      }, 503);
+    }
+
+    const isHttps = process.env.APP_ORIGIN?.startsWith("https://") || process.env.NODE_ENV === "production";
+    const secureFlag = isHttps ? "Secure; " : "";
+    const cookieHeader = `mirai_judge_session=${capability.cookieValue}; HttpOnly; SameSite=Strict; ${secureFlag}Path=/api/poc/judge/session; Max-Age=180`;
+
+    const response = safeJson(session, 200);
+    response.headers.set("Set-Cookie", cookieHeader);
+    return response;
+  } catch (error: any) {
+    if (error?.message?.includes("judge_session_secret") || error?.message?.includes("session_signing_secret")) {
+      return safeJson({
+        error: "session_signing_unavailable",
+        message: "Session signing secret unconfigured or invalid. Service is in fail-closed mode."
+      }, 503);
+    }
+    return safeJson({
+      error: "session_dispatch_failed",
+      message: "Failed to dispatch LiveKit agent worker or create room. Contact hackathon administrators."
+    }, 502);
+  }
+}
+
+export async function DELETE(request: Request) {
+  const validation = validateHostedRequest(request);
+  if (!validation.valid) {
+    return safeJson({ error: validation.error ?? "unauthorized" }, validation.status ?? 403);
+  }
+
+  // 1. Extract session capability cookie
+  const cookieHeader = request.headers.get("cookie") ?? "";
+  const sessionCookie = cookieHeader
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith("mirai_judge_session="))
+    ?.slice("mirai_judge_session=".length);
+
+  // 2. Parse request body if room was passed
+  let requestRoom: string | undefined;
+  try {
+    const raw = await request.text();
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (typeof data.room === "string") {
+        requestRoom = data.room;
+      }
+    }
+  } catch {}
+
+  // 3. Cryptographically verify session capability and room ownership
+  try {
+    const verified = verifyJudgeSessionCapability(sessionCookie, requestRoom);
+    if (!verified.valid || !verified.roomName) {
+      return safeJson({
+        error: "unauthorized_deletion",
+        message: "Deletion unauthorized: missing, expired, or mismatched session capability."
+      }, 403);
+    }
+
+    // 4. Delete the authorized room
+    await stopHostedSession(verified.roomName);
+
+    // 5. Clear capability cookie
+    const response = safeJson({ state: "ended" }, 200);
+    response.headers.set("Set-Cookie", "mirai_judge_session=; Path=/api/poc/judge/session; Max-Age=0; HttpOnly; SameSite=Strict");
+    return response;
+  } catch {
+    return safeJson({
+      error: "unauthorized_deletion",
+      message: "Deletion unauthorized: capability verification failed."
+    }, 403);
+  }
+}

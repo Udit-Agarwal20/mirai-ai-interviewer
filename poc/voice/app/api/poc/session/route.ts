@@ -19,11 +19,16 @@ async function proxy(request: Request, action: "start" | "stop" | "status") {
     const result = await fetch(`http://127.0.0.1:8001/${action}`,{
       method:action === "status" ? "GET":"POST", body, cache:"no-store",
       headers:{Authorization:`Bearer ${process.env.POC_CONTROL_SECRET}`,"X-Poc-Owner":id,"Content-Type":"application/json"},
-      signal:AbortSignal.timeout(action === "start" ? 10_000 : 5_000)
+      signal:AbortSignal.timeout(action === "start" ? 12_000 : 5_000)
     });
     const data = await result.json();
     return safeJson(data,result.status);
-  } catch { return safeJson({error:"local_agent_unavailable"},503); }
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      return safeJson({error:"agent_start_timeout"}, 504);
+    }
+    return safeJson({error:"local_agent_unavailable"},503);
+  }
 }
 // POST is the only route capable of admission; GET never starts a provider session.
 export async function POST(request: Request) { return proxy(request,"start"); }
