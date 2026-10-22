@@ -7,6 +7,20 @@ import {
   TrackSource,
 } from "livekit-server-sdk";
 
+
+export class HostedSessionError extends Error {
+  constructor(
+    message: string,
+    public readonly failureType: "definitely_not_started" | "uncertain",
+    public readonly roomCreated: boolean,
+    public readonly roomDeleted: boolean,
+    public readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "HostedSessionError";
+  }
+}
+
 export interface HostedSessionResult {
   token: string;
   url: string;
@@ -70,6 +84,46 @@ export function validateHostedRequest(request: Request): RequestValidationResult
     const contentType = request.headers.get("content-type") ?? "";
     if (!contentType.toLowerCase().includes("application/json")) {
       return { valid: false, error: "invalid_content_type", status: 415 };
+    }
+  }
+
+  return { valid: true };
+}
+
+
+/**
+ * Validates critical environment configuration BEFORE irreversible actions (e.g. consuming judge invitations).
+ * Ensures invalid server configurations never burn single-use judge codes.
+ */
+export function validateHostedEnvironment(): { valid: boolean; error?: string; status?: number } {
+  const isHosted = process.env.POC_MODE === "hosted" || process.env.NODE_ENV === "production";
+  if (isHosted) {
+    const appOrigin = process.env.APP_ORIGIN;
+    if (!appOrigin || !appOrigin.startsWith("https://")) {
+      return { valid: false, error: "production_origin_unconfigured", status: 500 };
+    }
+
+    try {
+      getSessionSigningSecret();
+    } catch {
+      return { valid: false, error: "session_signing_unavailable", status: 503 };
+    }
+
+    const apiKey = process.env.LIVEKIT_API_KEY?.trim();
+    const apiSecret = process.env.LIVEKIT_API_SECRET?.trim();
+    const rawUrl = process.env.LIVEKIT_URL?.trim();
+
+    if (!apiKey || !apiSecret) {
+      return { valid: false, error: "livekit_credentials_unconfigured", status: 503 };
+    }
+    if (!rawUrl || !rawUrl.startsWith("wss://") || rawUrl.includes("mock.livekit.cloud") || rawUrl.includes("example.com")) {
+      return { valid: false, error: "livekit_url_invalid_or_unconfigured", status: 503 };
+    }
+  } else {
+    try {
+      getSessionSigningSecret();
+    } catch {
+      return { valid: false, error: "session_signing_unavailable", status: 503 };
     }
   }
 
@@ -216,56 +270,131 @@ export async function createHostedSession(judgeLabel: string): Promise<HostedSes
   const dispatchClient = mockClientsForTest?.dispatchClient ?? new AgentDispatchClient(livekitUrl, apiKey, apiSecret);
 
   let roomCreated = false;
+  let roomDeleted = false;
+
   try {
     // 1. Create room
-    await roomService.createRoom({
-      name: roomName,
-      emptyTimeout: 30,
-      departureTimeout: 10,
-      maxParticipants: 2,
-    });
-    roomCreated = true;
-
-    // 2. Explicit agent dispatch to mirai-judge-agent
-    await dispatchClient.createDispatch(roomName, "mirai-judge-agent", {
-      metadata: JSON.stringify({ judgeLabel, maxDuration: 60, maxTurns: 3 }),
-    });
-
-    // 3. Short-lived (60s), room-scoped, microphone-only participant token
-    const token = new AccessToken(apiKey, apiSecret, {
-      identity,
-      ttl: "60s",
-      name: `Judge (${judgeLabel})`,
-    });
-
-    token.addGrant({
-      roomJoin: true,
-      room: roomName,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: false,
-      canPublishSources: [TrackSource.MICROPHONE],
-      canUpdateOwnMetadata: false,
-    });
-
-    const jwt = await token.toJwt();
-
-    return {
-      token: jwt,
-      url: livekitUrl,
-      room: roomName,
-      identity,
-      maxDuration: 60,
-      maxTurns: 3,
-    };
-  } catch (error) {
-    // Clean up newly created room on any subsequent failure (dispatch failure, token error, etc.)
-    if (roomCreated) {
+    try {
+      await roomService.createRoom({
+        name: roomName,
+        emptyTimeout: 30,
+        departureTimeout: 10,
+        maxParticipants: 2,
+      });
+      roomCreated = true;
+    } catch (createErr: any) {
+      // Once createRoom has been attempted over the network, outcome is uncertain:
+      // A network timeout, connection reset, or lost HTTP response does NOT prove that LiveKit failed to create the room remotely.
+      // Attempt bounded cleanup if possible, but treat failure as uncertain.
+      let delSuccess = false;
       try {
         await roomService.deleteRoom(roomName);
+        delSuccess = true;
       } catch {}
+
+      throw new HostedSessionError(
+        createErr?.message || "create_room_uncertain",
+        "uncertain",
+        false,
+        delSuccess,
+        createErr
+      );
     }
-    throw error;
+
+    // 2. Explicit agent dispatch to mirai-judge-agent
+    try {
+      await dispatchClient.createDispatch(roomName, "mirai-judge-agent", {
+        metadata: JSON.stringify({ judgeLabel, maxDuration: 60, maxTurns: 3 }),
+      });
+    } catch (dispatchErr: any) {
+      // Room was created, but dispatch failed. Attempt bounded room deletion immediately.
+      let delSuccess = false;
+      try {
+        await roomService.deleteRoom(roomName);
+        delSuccess = true;
+        roomDeleted = true;
+      } catch {
+        delSuccess = false;
+        roomDeleted = false;
+      }
+
+      // If room deletion failed OR dispatch was ambiguous (e.g. timeout), LiveKit resources may persist.
+      // Fail-closed rule: Treat any post-room-creation dispatch failure as uncertain.
+      throw new HostedSessionError(
+        dispatchErr?.message || "dispatch_failed_uncertain",
+        "uncertain",
+        true,
+        delSuccess,
+        dispatchErr
+      );
+    }
+
+    // 3. Short-lived (60s), room-scoped, microphone-only participant token
+    try {
+      const token = new AccessToken(apiKey, apiSecret, {
+        identity,
+        ttl: "60s",
+        name: `Judge (${judgeLabel})`,
+      });
+
+      token.addGrant({
+        roomJoin: true,
+        room: roomName,
+        canPublish: true,
+        canSubscribe: true,
+        canPublishData: false,
+        canPublishSources: [TrackSource.MICROPHONE],
+        canUpdateOwnMetadata: false,
+      });
+
+      const jwt = await token.toJwt();
+
+      return {
+        token: jwt,
+        url: livekitUrl,
+        room: roomName,
+        identity,
+        maxDuration: 60,
+        maxTurns: 3,
+      };
+    } catch (tokenErr: any) {
+      let delSuccess = false;
+      try {
+        await roomService.deleteRoom(roomName);
+        delSuccess = true;
+        roomDeleted = true;
+      } catch {
+        delSuccess = false;
+        roomDeleted = false;
+      }
+      throw new HostedSessionError(
+        tokenErr?.message || "token_generation_failed",
+        "uncertain",
+        true,
+        delSuccess,
+        tokenErr
+      );
+    }
+  } catch (error) {
+    if (error instanceof HostedSessionError) {
+      throw error;
+    }
+    let delSuccess = false;
+    if (roomCreated && !roomDeleted) {
+      try {
+        await roomService.deleteRoom(roomName);
+        delSuccess = true;
+      } catch {
+        delSuccess = false;
+      }
+    }
+    throw new HostedSessionError(
+      (error as any)?.message || "session_creation_failed",
+      "uncertain",
+      roomCreated,
+      delSuccess,
+      error
+    );
   }
 }
 

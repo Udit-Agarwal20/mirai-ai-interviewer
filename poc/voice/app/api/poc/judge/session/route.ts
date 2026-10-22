@@ -3,7 +3,9 @@ import { getAdmissionStore, verifyJudgeCode } from "../../../../../lib/hosted-ad
 import {
   createHostedSession,
   createJudgeSessionCapability,
+  HostedSessionError,
   stopHostedSession,
+  validateHostedEnvironment,
   validateHostedRequest,
   verifyJudgeSessionCapability,
 } from "../../../../../lib/hosted-session";
@@ -84,49 +86,63 @@ export async function POST(request: Request) {
     }, 403);
   }
 
-  // 3. Atomic durable admission claim (max 1 per code, max 2 globally; fail-closed on outage)
+  // 3. Pre-validate server environment and voice credentials BEFORE claiming the invitation code.
+  // An unconfigured server environment must NEVER burn a judge single-use invitation.
+  const envValidation = validateHostedEnvironment();
+  if (!envValidation.valid) {
+    return safeJson({
+      error: envValidation.error ?? "server_configuration_error",
+      message: "Server voice infrastructure is unconfigured or invalid. Invitation code preserved."
+    }, envValidation.status ?? 503);
+  }
+
+  // 4. Atomic durable admission claim (max 1 per code, max 2 globally; fail-closed on outage)
   const claim = await store.claimAdmission(verification.codeHash, verification.judgeLabel);
   if (!claim.allowed) {
     const status = claim.error === "store_unavailable" ? 503 : 409;
     return safeJson({ error: claim.error, message: claim.message }, status);
   }
 
-  // 4. Create room, dispatch agent worker, and generate short-lived token
+  // 5. Create room, dispatch agent worker, and generate short-lived token
+  let session;
   try {
-    const session = await createHostedSession(claim.judgeId);
+    session = await createHostedSession(claim.judgeId);
+  } catch (dispatchError: any) {
+    // Fail-closed rule: Disable automatic invitation rollback after ANY attempted remote room creation.
+    // Network timeouts, lost responses, or remote rejections leave remote status uncertain.
+    // Keep already-consumed invitations claimed until an administrator verifies the room
+    // and agent have stopped and explicitly authorizes recovery via ADMIN_RESET_SECRET.
+    await store.recordFailedAttempt(clientIdentifier);
 
-    // 5. Generate cryptographically signed session capability cookie
-    let capability;
-    try {
-      capability = createJudgeSessionCapability(claim.judgeId, session.room);
-    } catch (err: any) {
-      // If session capability creation fails due to unconfigured secret, clean up and fail closed
-      await stopHostedSession(session.room);
-      return safeJson({
-        error: "session_signing_unavailable",
-        message: "Session signing secret unconfigured or invalid. Service is in fail-closed mode."
-      }, 503);
-    }
-
-    const isHttps = process.env.APP_ORIGIN?.startsWith("https://") || process.env.NODE_ENV === "production";
-    const secureFlag = isHttps ? "Secure; " : "";
-    const cookieHeader = `mirai_judge_session=${capability.cookieValue}; HttpOnly; SameSite=Strict; ${secureFlag}Path=/api/poc/judge/session; Max-Age=180`;
-
-    const response = safeJson(session, 200);
-    response.headers.set("Set-Cookie", cookieHeader);
-    return response;
-  } catch (error: any) {
-    if (error?.message?.includes("judge_session_secret") || error?.message?.includes("session_signing_secret")) {
-      return safeJson({
-        error: "session_signing_unavailable",
-        message: "Session signing secret unconfigured or invalid. Service is in fail-closed mode."
-      }, 503);
-    }
     return safeJson({
-      error: "session_dispatch_failed",
-      message: "Failed to dispatch LiveKit agent worker or create room. Contact hackathon administrators."
+      error: "session_dispatch_uncertain",
+      message: "Interview session startup could not be completed and room status is uncertain. To protect assessment integrity, please contact the hackathon administrator."
     }, 502);
   }
+
+  // 6. Generate cryptographically signed session capability cookie
+  let capability;
+  try {
+    capability = createJudgeSessionCapability(claim.judgeId, session.room);
+  } catch (capError: any) {
+    // Session capability signing failed after agent dispatch. Initiate room cleanup.
+    // Fail-closed rule: NEVER automatically restore code since an agent was already dispatched.
+    await stopHostedSession(session.room);
+    await store.recordFailedAttempt(clientIdentifier);
+
+    return safeJson({
+      error: "session_signing_unavailable",
+      message: "Session signing failed after agent dispatch. Room cleanup initiated. To protect assessment integrity, please contact the administrator."
+    }, 503);
+  }
+
+  const isHttps = process.env.APP_ORIGIN?.startsWith("https://") || process.env.NODE_ENV === "production";
+  const secureFlag = isHttps ? "Secure; " : "";
+  const cookieHeader = `mirai_judge_session=${capability.cookieValue}; HttpOnly; SameSite=Strict; ${secureFlag}Path=/api/poc/judge/session; Max-Age=180`;
+
+  const response = safeJson(session, 200);
+  response.headers.set("Set-Cookie", cookieHeader);
+  return response;
 }
 
 export async function DELETE(request: Request) {
@@ -166,7 +182,14 @@ export async function DELETE(request: Request) {
     }
 
     // 4. Delete the authorized room
-    await stopHostedSession(verified.roomName);
+    const stopped = await stopHostedSession(verified.roomName);
+    if (!stopped) {
+      // Must not report successful termination when room deletion failed!
+      return safeJson({
+        error: "room_deletion_failed",
+        message: "Room deletion could not be verified with voice provider. Server 60-second timer will enforce termination."
+      }, 502);
+    }
 
     // 5. Clear capability cookie
     const response = safeJson({ state: "ended" }, 200);

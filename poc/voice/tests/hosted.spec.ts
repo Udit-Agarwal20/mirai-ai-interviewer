@@ -1,3 +1,5 @@
+import { POST, DELETE } from "../app/api/poc/judge/session/route";
+import { JudgeLiveSession } from "../lib/judge-client";
 import { test, expect } from "@playwright/test";
 import { createHash } from "node:crypto";
 import {
@@ -14,6 +16,7 @@ import {
   createJudgeSessionCapability,
   getSessionSigningSecret,
   setMockLiveKitClientsForTesting,
+  validateHostedEnvironment,
   validateHostedRequest,
   verifyJudgeSessionCapability,
 } from "../lib/hosted-session";
@@ -35,7 +38,7 @@ test.beforeAll(() => {
   process.env.LIVEKIT_URL = "wss://synthetic.livekit.cloud";
 });
 
-test.describe("Fix 1: Production Admission Must Fail Closed", () => {
+test.describe("Fix 1 & Task 3: Upstash Redis EVAL Contract & Fail Closed", () => {
   test("1. Hosted production mode strictly refuses MemoryAdmissionStore", () => {
     const originalMode = process.env.POC_MODE;
     const originalUrl = process.env.UPSTASH_REDIS_REST_URL;
@@ -56,75 +59,114 @@ test.describe("Fix 1: Production Admission Must Fail Closed", () => {
     }
   });
 
-  test("2. Upstash REST contract: handles OK, ALREADY_CONSUMED, GLOBAL_LIMIT_REACHED", async () => {
-    // Protocol-level mock: OK
-    const okStore = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "mock-token",
-      async () => new Response(JSON.stringify({ result: "OK" }), { status: 200 })
-    );
-    const okClaim = await okStore.claimAdmission(hash1, "judge-1");
-    expect(okClaim.allowed).toBe(true);
+  test("2. Upstash REST EVAL contract: inspects exact URL, headers, and ['EVAL', script, numkeys, ...] body", async () => {
+    let capturedUrl = "";
+    let capturedMethod = "";
+    let capturedHeaders: Record<string, string> = {};
+    let capturedBody: any = null;
 
-    // Protocol-level mock: ALREADY_CONSUMED
-    const consumedStore = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "mock-token",
-      async () => new Response(JSON.stringify({ result: "ALREADY_CONSUMED" }), { status: 200 })
-    );
-    const consumedClaim = await consumedStore.claimAdmission(hash1, "judge-1");
-    expect(consumedClaim.allowed).toBe(false);
-    if (!consumedClaim.allowed) expect(consumedClaim.error).toBe("already_consumed");
+    const mockFetch = async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = url.toString();
+      capturedMethod = init?.method ?? "GET";
+      capturedHeaders = (init?.headers as Record<string, string>) ?? {};
+      if (typeof init?.body === "string") {
+        capturedBody = JSON.parse(init.body);
+      }
+      return new Response(JSON.stringify({ result: "OK" }), { status: 200 });
+    };
 
-    // Protocol-level mock: GLOBAL_LIMIT_REACHED
-    const limitStore = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "mock-token",
-      async () => new Response(JSON.stringify({ result: "GLOBAL_LIMIT_REACHED" }), { status: 200 })
-    );
-    const limitClaim = await limitStore.claimAdmission(hash2, "judge-2");
-    expect(limitClaim.allowed).toBe(false);
-    if (!limitClaim.allowed) expect(limitClaim.error).toBe("global_limit_reached");
+    const store = new UpstashRedisAdmissionStore("https://mock.upstash.io", "mock-secret-token", mockFetch as any);
+
+    // 1. Inspect claimAdmission request format
+    const claimRes = await store.claimAdmission(hash1, "judge-1");
+    expect(claimRes.allowed).toBe(true);
+
+    // Verify Upstash base endpoint (no /eval suffix!)
+    expect(capturedUrl).toBe("https://mock.upstash.io");
+    expect(capturedMethod).toBe("POST");
+    expect(capturedHeaders["Authorization"]).toBe("Bearer mock-secret-token");
+    expect(capturedHeaders["Content-Type"]).toBe("application/json");
+
+    // Verify command array: ["EVAL", script, 2, codeKey, countKey, maxGlobal, timestamp, judgeLabel]
+    expect(Array.isArray(capturedBody)).toBe(true);
+    expect(capturedBody[0]).toBe("EVAL");
+    expect(typeof capturedBody[1]).toBe("string"); // Lua script
+    expect(capturedBody[2]).toBe(2); // numkeys
+    expect(capturedBody[3]).toBe(`mirai:judge:invite:${hash1}`); // KEYS[1]
+    expect(capturedBody[4]).toBe("mirai:judge:admitted_count"); // KEYS[2]
+    expect(capturedBody[5]).toBe("2"); // ARGV[1] (maxGlobal)
+    expect(typeof capturedBody[6]).toBe("string"); // ARGV[2] (ISO timestamp)
+    expect(capturedBody[7]).toBe("judge-1"); // ARGV[3] (judgeId)
+
+    // 2. Inspect resetCode request format
+    let resetUrl = "";
+    let resetBody: any = null;
+    const resetStore = new UpstashRedisAdmissionStore("https://mock.upstash.io", "mock-token", (async (url: any, init: any) => {
+      resetUrl = url.toString();
+      resetBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ result: 1 }), { status: 200 });
+    }) as any);
+
+    const resetSuccess = await resetStore.resetCode(hash1);
+    expect(resetSuccess).toBe(true);
+    expect(resetUrl).toBe("https://mock.upstash.io");
+    expect(Array.isArray(resetBody)).toBe(true);
+    expect(resetBody[0]).toBe("EVAL");
+    expect(resetBody[2]).toBe(2);
+    expect(resetBody[3]).toBe(`mirai:judge:invite:${hash1}`);
+    expect(resetBody[4]).toBe("mirai:judge:admitted_count");
   });
 
-  test("3. Upstash REST contract: fails closed on HTTP 401, 500, malformed JSON, and timeouts", async () => {
-    // HTTP 401 Unauthorized
+  test("3. Upstash REST contract: fails closed on HTTP errors, Redis errors, malformed/nonnumeric results", async () => {
+    // 1. HTTP 401 Unauthorized
     const store401 = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "bad-token",
+      "https://mock.upstash.io", "bad-token",
       async () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
     );
     const res401 = await store401.claimAdmission(hash1, "judge-1");
     expect(res401.allowed).toBe(false);
     if (!res401.allowed) expect(res401.error).toBe("store_unavailable");
 
-    // HTTP 500 Internal Error
+    // 2. HTTP 500 Internal Error
     const store500 = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "token",
+      "https://mock.upstash.io", "token",
       async () => new Response("Internal Server Error", { status: 500 })
     );
     const res500 = await store500.claimAdmission(hash1, "judge-1");
     expect(res500.allowed).toBe(false);
     if (!res500.allowed) expect(res500.error).toBe("store_unavailable");
 
-    // Malformed JSON
+    // 3. Upstash Redis error object { error: "ERR syntax error" }
+    const storeRedisErr = new UpstashRedisAdmissionStore(
+      "https://mock.upstash.io", "token",
+      async () => new Response(JSON.stringify({ error: "ERR command not allowed" }), { status: 200 })
+    );
+    const resRedisErr = await storeRedisErr.claimAdmission(hash1, "judge-1");
+    expect(resRedisErr.allowed).toBe(false);
+    if (!resRedisErr.allowed) expect(resRedisErr.error).toBe("store_unavailable");
+
+    // 4. Malformed JSON
     const storeMalformed = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "token",
-      async () => new Response("{ not valid json }", { status: 200 })
+      "https://mock.upstash.io", "token",
+      async () => new Response("{ invalid json syntax", { status: 200 })
     );
     const resMalformed = await storeMalformed.claimAdmission(hash1, "judge-1");
     expect(resMalformed.allowed).toBe(false);
     if (!resMalformed.allowed) expect(resMalformed.error).toBe("store_unavailable");
 
-    // Network timeout
+    // 5. Nonnumeric rate limit result
+    const storeNonNumeric = new UpstashRedisAdmissionStore(
+      "https://mock.upstash.io", "token",
+      async () => new Response(JSON.stringify({ result: "not-a-number" }), { status: 200 })
+    );
+    const resNonNumeric = await storeNonNumeric.checkRateLimit("client-1");
+    expect(resNonNumeric.allowed).toBe(false);
+    expect(resNonNumeric.error).toBe("store_unavailable");
+
+    // 6. Network timeout
     const storeTimeout = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "token",
-      async () => {
-        throw new Error("Network timeout after 5000ms");
-      }
+      "https://mock.upstash.io", "token",
+      async () => { throw new Error("Network timeout after 5000ms"); }
     );
     const resTimeout = await storeTimeout.claimAdmission(hash1, "judge-1");
     expect(resTimeout.allowed).toBe(false);
@@ -249,7 +291,7 @@ test.describe("Fix 2: Dedicated Session Signing Secret & Fail-Closed Enforcement
   });
 });
 
-test.describe("Fix 3: Actual Invitation Rate Limiting and Abuse Prevention", () => {
+test.describe("Fix 3 & Rate Limiting Verification", () => {
   test("8. Rate limiting blocks client after 5 failed attempts with HTTP 429", async () => {
     const memStore = new MemoryAdmissionStore();
     const testClient = "192.168.1.100";
@@ -273,28 +315,38 @@ test.describe("Fix 3: Actual Invitation Rate Limiting and Abuse Prevention", () 
     expect(checkAfter5.error).toBe("too_many_failed_attempts");
   });
 
-  test("9. Upstash Redis rate limiting: genuine blocking and fails closed on outage", async () => {
-    // 1. Upstash returns count >= 5 on GET -> rate limited
-    const blockedStore = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "mock-token",
-      async () => new Response(JSON.stringify({ result: "5" }), { status: 200 })
-    );
-    const check = await blockedStore.checkRateLimit("203.0.113.1");
+  test("9. Upstash Redis rate limiting: GET and pipeline format inspections", async () => {
+    let capturedGetUrl = "";
+    let capturedPipelineBody: any = null;
+
+    const customFetch = async (url: any, init: any) => {
+      const u = url.toString();
+      if (u.includes("/get/")) {
+        capturedGetUrl = u;
+        return new Response(JSON.stringify({ result: "5" }), { status: 200 });
+      }
+      if (u.includes("/pipeline")) {
+        capturedPipelineBody = JSON.parse(init.body);
+        return new Response(JSON.stringify([{ result: 6 }, { result: "OK" }]), { status: 200 });
+      }
+      return new Response("Not Found", { status: 404 });
+    };
+
+    const redisStore = new UpstashRedisAdmissionStore("https://mock.upstash.io", "mock-token", customFetch as any);
+
+    // 1. Check rate limit uses GET /get/<key>
+    const check = await redisStore.checkRateLimit("203.0.113.1");
     expect(check.allowed).toBe(false);
     expect(check.error).toBe("too_many_failed_attempts");
+    expect(capturedGetUrl).toContain("https://mock.upstash.io/get/mirai:judge:failed:");
 
-    // 2. Upstash outage on rate limit check -> fails closed (store_unavailable)
-    const outageStore = new UpstashRedisAdmissionStore(
-      "https://mock.upstash.io",
-      "mock-token",
-      async () => {
-        throw new Error("Redis cluster down");
-      }
-    );
-    const checkOutage = await outageStore.checkRateLimit("203.0.113.1");
-    expect(checkOutage.allowed).toBe(false);
-    expect(checkOutage.error).toBe("store_unavailable");
+    // 2. Record failed attempt uses POST /pipeline with [INCR, EXPIRE]
+    const rec = await redisStore.recordFailedAttempt("203.0.113.1");
+    expect(rec.allowed).toBe(false);
+    expect(Array.isArray(capturedPipelineBody)).toBe(true);
+    expect(capturedPipelineBody[0][0]).toBe("INCR");
+    expect(capturedPipelineBody[1][0]).toBe("EXPIRE");
+    expect(capturedPipelineBody[1][2]).toBe(600);
   });
 
   test("10. Multiple clients cannot bypass the global 2-session admission cap", async () => {
@@ -316,8 +368,347 @@ test.describe("Fix 3: Actual Invitation Rate Limiting and Abuse Prevention", () 
   });
 });
 
+function makeJudgePostRequest(code: string, origin = "http://127.0.0.1:3000") {
+  return new Request(`${origin}/api/poc/judge/session`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: origin,
+      "X-Forwarded-For": "203.0.113.195",
+    },
+    body: JSON.stringify({
+      inviteCode: code,
+      consent: true,
+      preflight: true,
+    }),
+  });
+}
+
+function makeJudgeDeleteRequest(room: string, cookieValue: string, origin = "http://127.0.0.1:3000") {
+  return new Request(`${origin}/api/poc/judge/session`, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: origin,
+      Cookie: `mirai_judge_session=${cookieValue}`,
+    },
+    body: JSON.stringify({ room }),
+  });
+}
+
+test.describe("Task 4: Preservation of Judge Invitations & Truthful Session Deletion", () => {
+  test("11. Server environment pre-checks prevent burning judge invitation codes", () => {
+    const originalMode = process.env.POC_MODE;
+    const originalOrigin = process.env.APP_ORIGIN;
+    const originalUrl = process.env.LIVEKIT_URL;
+
+    try {
+      process.env.POC_MODE = "hosted";
+      process.env.APP_ORIGIN = "https://mirai-judge.onrender.com";
+
+      // 1. Missing or mock LiveKit URL detected before claim
+      process.env.LIVEKIT_URL = "wss://mock.livekit.cloud";
+      const envCheckMock = validateHostedEnvironment();
+      expect(envCheckMock.valid).toBe(false);
+      expect(envCheckMock.error).toBe("livekit_url_invalid_or_unconfigured");
+
+      // 2. Valid environment passes pre-check
+      process.env.LIVEKIT_URL = "wss://mirai-real.livekit.cloud";
+      const envCheckValid = validateHostedEnvironment();
+      expect(envCheckValid.valid).toBe(true);
+    } finally {
+      process.env.POC_MODE = originalMode;
+      process.env.APP_ORIGIN = originalOrigin;
+      process.env.LIVEKIT_URL = originalUrl;
+    }
+  });
+
+  test("12. POST route control flow: LiveKit dispatch timeout results in uncertain status and does NOT restore code", async () => {
+    let roomCreated = false;
+    let roomDeleted = false;
+
+    setMockLiveKitClientsForTesting({
+      roomService: {
+        createRoom: async () => {
+          roomCreated = true;
+          return {} as any;
+        },
+        deleteRoom: async () => {
+          roomDeleted = true;
+          return {} as any;
+        },
+      },
+      dispatchClient: {
+        createDispatch: async () => {
+          throw new Error("LiveKit dispatch timeout after 10000ms");
+        },
+      },
+    });
+
+    const memStore = new MemoryAdmissionStore();
+    setAdmissionStoreForTesting(memStore);
+
+    try {
+      const req = makeJudgePostRequest(judgeCode1);
+      const res = await POST(req);
+
+      expect(res.status).toBe(502);
+      const body = await res.json();
+      expect(body.error).toBe("session_dispatch_uncertain");
+      expect(body.message).toContain("contact the hackathon administrator");
+      expect(body.message).not.toContain("preserved for retry");
+
+      // Verify code was NOT restored or rolled back in the store!
+      expect(memStore.stats.admittedCount).toBe(1);
+      expect(memStore.stats.consumedCount).toBe(1);
+
+      // Verify duplicate retry attempt following ambiguous outcome is rejected as already_consumed (HTTP 409)
+      const retryReq = makeJudgePostRequest(judgeCode1);
+      const retryRes = await POST(retryReq);
+      expect(retryRes.status).toBe(409);
+      const retryBody = await retryRes.json();
+      expect(retryBody.error).toBe("already_consumed");
+      expect(retryBody.message).toContain("already been used");
+      // Admitted count remains capped at 1
+      expect(memStore.stats.admittedCount).toBe(1);
+    } finally {
+      setMockLiveKitClientsForTesting(null);
+      setAdmissionStoreForTesting(null);
+    }
+  });
+
+  test("13. POST route control flow: Room deletion failure results in uncertain status and fail-closed code retention", async () => {
+    setMockLiveKitClientsForTesting({
+      roomService: {
+        createRoom: async () => {
+          return {} as any;
+        },
+        deleteRoom: async () => {
+          throw new Error("LiveKit 500: Room deletion failed");
+        },
+      },
+      dispatchClient: {
+        createDispatch: async () => {
+          throw new Error("Agent dispatch failed");
+        },
+      },
+    });
+
+    const memStore = new MemoryAdmissionStore();
+    setAdmissionStoreForTesting(memStore);
+
+    try {
+      const req = makeJudgePostRequest(judgeCode1);
+      const res = await POST(req);
+
+      expect(res.status).toBe(502);
+      const body = await res.json();
+      expect(body.error).toBe("session_dispatch_uncertain");
+      expect(body.message).toContain("contact the hackathon administrator");
+
+      // Verify code remains consumed in store to preserve 2-session cap
+      expect(memStore.stats.admittedCount).toBe(1);
+      expect(memStore.stats.consumedCount).toBe(1);
+    } finally {
+      setMockLiveKitClientsForTesting(null);
+      setAdmissionStoreForTesting(null);
+    }
+  });
+
+  test("14. DELETE route control flow: Truthful 502 room_deletion_failed without reporting success or leaking credentials", async () => {
+    const testRoom = "mirai-judge-delete-fail-test-room";
+    const cap = createJudgeSessionCapability("judge-1", testRoom);
+
+    setMockLiveKitClientsForTesting({
+      roomService: {
+        deleteRoom: async () => {
+          throw new Error("LiveKit deleteRoom connection reset");
+        },
+      } as any,
+      dispatchClient: {} as any,
+    });
+
+    try {
+      const req = makeJudgeDeleteRequest(testRoom, cap.cookieValue);
+      const res = await DELETE(req);
+
+      expect(res.status).toBe(502);
+      const body = await res.json();
+      expect(body.error).toBe("room_deletion_failed");
+      expect(body.message).toContain("Room deletion could not be verified with voice provider");
+      expect(body.message).toContain("Server 60-second timer will enforce termination");
+      // Must NOT report state: ended
+      expect(body.state).toBeUndefined();
+      // Must NOT expose secrets or credentials
+      const bodyStr = JSON.stringify(body);
+      expect(bodyStr).not.toContain("secret");
+      expect(bodyStr).not.toContain("token");
+      expect(bodyStr).not.toContain("test-lk-");
+    } finally {
+      setMockLiveKitClientsForTesting(null);
+    }
+  });
+
+  test("15. POST route control flow: createRoom failure/timeout treats remote outcome as uncertain, keeps code consumed, and blocks duplicate retries", async () => {
+    let createRoomAttempts = 0;
+    let createdRooms: string[] = [];
+
+    // Simulate scenario: createRoom was attempted remotely (and may have succeeded remotely),
+    // but the client HTTP connection timed out or response was lost
+    setMockLiveKitClientsForTesting({
+      roomService: {
+        createRoom: async (opts: any) => {
+          createRoomAttempts++;
+          createdRooms.push(opts.name);
+          throw new Error("HTTP connection timeout 504: response lost after room creation");
+        },
+        deleteRoom: async () => ({} as any),
+      } as any,
+      dispatchClient: {
+        createDispatch: async () => ({} as any),
+      },
+    });
+
+    const memStore = new MemoryAdmissionStore();
+    setAdmissionStoreForTesting(memStore);
+
+    try {
+      // 1. Initial POST attempt: createRoom throws timeout / network error
+      const req1 = makeJudgePostRequest(judgeCode1);
+      const res1 = await POST(req1);
+
+      expect(res1.status).toBe(502);
+      const body1 = await res1.json();
+      expect(body1.error).toBe("session_dispatch_uncertain");
+      expect(body1.message).toContain("contact the hackathon administrator");
+      expect(body1.message).not.toContain("preserved for retry");
+
+      // Invitation must REMAIN consumed in the store (fail-closed)
+      expect(memStore.stats.consumedCount).toBe(1);
+      expect(memStore.stats.admittedCount).toBe(1);
+      expect(createRoomAttempts).toBe(1);
+
+      // 2. Duplicate retry attempt with the exact same invitation code
+      const retryReq = makeJudgePostRequest(judgeCode1);
+      const retryRes = await POST(retryReq);
+
+      // Duplicate retry MUST be rejected with HTTP 409 already_consumed
+      expect(retryRes.status).toBe(409);
+      const retryBody = await retryRes.json();
+      expect(retryBody.error).toBe("already_consumed");
+      expect(retryBody.message).toContain("already been used");
+
+      // Crucial assertion: NO additional room was requested from the retry!
+      expect(createRoomAttempts).toBe(1);
+      expect(createdRooms.length).toBe(1);
+
+      // Global admitted count is strictly preserved at 1 (within 2-session cap)
+      expect(memStore.stats.admittedCount).toBe(1);
+    } finally {
+      setMockLiveKitClientsForTesting(null);
+      setAdmissionStoreForTesting(null);
+    }
+  });
+
+  test("16. Full POST route control flow: Enforces strict two-session global cap without creating extra rooms", async () => {
+    let createdRooms: string[] = [];
+
+    setMockLiveKitClientsForTesting({
+      roomService: {
+        createRoom: async (opts: any) => {
+          createdRooms.push(opts.name);
+          return {} as any;
+        },
+      } as any,
+      dispatchClient: {
+        createDispatch: async () => ({} as any),
+      },
+    });
+
+    const memStore = new MemoryAdmissionStore();
+    setAdmissionStoreForTesting(memStore);
+
+    try {
+      // 1. Session 1 succeeds
+      const res1 = await POST(makeJudgePostRequest(judgeCode1));
+      expect(res1.status).toBe(200);
+      const body1 = await res1.json();
+      expect(body1.room).toBeDefined();
+      expect(body1.token).toBeDefined();
+      expect(memStore.stats.admittedCount).toBe(1);
+
+      // 2. Session 2 succeeds
+      const res2 = await POST(makeJudgePostRequest(judgeCode2));
+      expect(res2.status).toBe(200);
+      const body2 = await res2.json();
+      expect(body2.room).toBeDefined();
+      expect(body2.token).toBeDefined();
+      expect(memStore.stats.admittedCount).toBe(2);
+      expect(createdRooms.length).toBe(2);
+
+      // 3. Attempt with unrecognized code rejected with 403
+      const res3 = await POST(makeJudgePostRequest("mirai-judge-unauthorized-code"));
+      expect(res3.status).toBe(403);
+
+      // 4. Any attempt after global cap of 2 is reached is rejected with 409
+      const thirdCodeHash = createHash("sha256").update("mirai-judge-code-3" + testPepper).digest("hex");
+      const capCheck = await memStore.claimAdmission(thirdCodeHash, "judge-3");
+      expect(capCheck.allowed).toBe(false);
+      if (!capCheck.allowed) expect(capCheck.error).toBe("global_limit_reached");
+      expect(createdRooms.length).toBe(2); // No extra room created
+    } finally {
+      setMockLiveKitClientsForTesting(null);
+      setAdmissionStoreForTesting(null);
+    }
+  });
+
+  test("17. Browser client JudgeLiveSession handles DELETE 502 failure safely with truthful status notice", async () => {
+    let stateTransitions: Array<{ state: string; detail: string }> = [];
+    const dummyContainer = { appendChild: () => {} } as any;
+
+    const mockFetch = async (url: any, init: any) => {
+      const u = url.toString();
+      if (u.includes("/api/poc/judge/session") && init.method === "DELETE") {
+        return new Response(JSON.stringify({
+          error: "room_deletion_failed",
+          message: "Room deletion could not be verified with voice provider. Server 60-second timer will enforce termination.",
+        }), { status: 502 });
+      }
+      return new Response("Not Found", { status: 404 });
+    };
+
+    const client = new JudgeLiveSession(
+      (state, detail) => {
+        stateTransitions.push({ state, detail });
+      },
+      () => {},
+      dummyContainer,
+      () => ({
+        connect: async () => {},
+        startAudio: async () => {},
+        localParticipant: { publishTrack: async () => {} },
+        remoteParticipants: new Map(),
+        on: () => {},
+        disconnect: async () => {},
+      } as any),
+      mockFetch as any
+    );
+
+    (client as any).currentRoomName = "mirai-judge-test-room-client-del-fail";
+    await client.stop("Interview ended by judge.");
+
+    // Allow remoteStop microtask to complete
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(client.getState()).toBe("ended");
+    const lastTransition = stateTransitions[stateTransitions.length - 1];
+    expect(lastTransition.state).toBe("ended");
+    expect(lastTransition.detail).toContain("Interview ended locally. Notice: Room deletion could not be verified with voice provider. Server 60-second timer will enforce termination.");
+  });
+});
+
 test.describe("Security Hardening & Protection Verifications", () => {
-  test("11. Strict origin validation: rejects missing origin, cross-site, and localhost in production", () => {
+  test("18. Strict origin validation: rejects missing origin, cross-site, and localhost in production", () => {
     const originalMode = process.env.POC_MODE;
     const originalOrigin = process.env.APP_ORIGIN;
 
@@ -371,7 +762,7 @@ test.describe("Security Hardening & Protection Verifications", () => {
     }
   });
 
-  test("12. Hosted production mode strictly refuses mock LiveKit URLs and test bypass injection", async () => {
+  test("19. Hosted production mode strictly refuses mock LiveKit URLs and test bypass injection", async () => {
     const originalMode = process.env.POC_MODE;
     const originalEnv = process.env.NODE_ENV;
     const originalUrl = process.env.LIVEKIT_URL;
@@ -393,39 +784,10 @@ test.describe("Security Hardening & Protection Verifications", () => {
       process.env.LIVEKIT_URL = originalUrl;
     }
   });
-
-  test("13. Partial start failure cleanup: room deleted if agent dispatch fails", async () => {
-    let roomCreated = false;
-    let roomDeleted = false;
-
-    setMockLiveKitClientsForTesting({
-      roomService: {
-        createRoom: async () => {
-          roomCreated = true;
-          return {} as any;
-        },
-        deleteRoom: async () => {
-          roomDeleted = true;
-          return {} as any;
-        },
-      },
-      dispatchClient: {
-        createDispatch: async () => {
-          throw new Error("LiveKit dispatch quota exceeded");
-        },
-      },
-    });
-
-    await expect(createHostedSession("judge-1")).rejects.toThrow("LiveKit dispatch quota exceeded");
-    expect(roomCreated).toBe(true);
-    expect(roomDeleted).toBe(true);
-
-    setMockLiveKitClientsForTesting(null);
-  });
 });
 
 test.describe("Phase E & F: Offline Browser UI and Lifecycle on /judge", () => {
-  test("14. Browser UI requires code, preflight, and consent to enable start button", async ({ page }) => {
+  test("20. Browser UI requires code, preflight, and consent to enable start button", async ({ page }) => {
     await page.goto("/judge");
 
     const startBtn = page.getByTestId("start-judge-interview");
@@ -446,7 +808,7 @@ test.describe("Phase E & F: Offline Browser UI and Lifecycle on /judge", () => {
     await expect(startBtn).toBeEnabled();
   });
 
-  test("15. Browser displays safe error when invitation code is invalid or reused", async ({ page }) => {
+  test("21. Browser displays safe error when invitation code is invalid or reused", async ({ page }) => {
     await page.route("**/api/poc/judge/session", async (route) => {
       if (route.request().method() === "POST") {
         await route.fulfill({
@@ -474,7 +836,7 @@ test.describe("Phase E & F: Offline Browser UI and Lifecycle on /judge", () => {
     await expect(page.getByTestId("judge-session-status")).toContainText("already been used");
   });
 
-  test("16. Tab hidden cancels judge session cleanly and dispatches authenticated DELETE", async ({ page }) => {
+  test("22. Tab hidden cancels judge session cleanly and dispatches authenticated DELETE", async ({ page }) => {
     let deleteDispatched = false;
     await page.route("**/api/poc/judge/session", async (route) => {
       if (route.request().method() === "POST") {

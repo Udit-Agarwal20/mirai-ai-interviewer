@@ -165,7 +165,8 @@ export class MemoryAdmissionStore implements JudgeAdmissionStore {
 
 /**
  * Production Upstash Redis REST atomic admission store.
- * Executes an atomic Lua script over HTTPS REST.
+ * Executes atomic Lua scripts over HTTPS REST adhering to documented Upstash EVAL command format:
+ * POST https://<database-url> with JSON array ["EVAL", script, numkeys, keys..., args...]
  * Default-deny if Redis is unavailable, malformed, or unconfigured.
  */
 export class UpstashRedisAdmissionStore implements JudgeAdmissionStore {
@@ -204,7 +205,27 @@ export class UpstashRedisAdmissionStore implements JudgeAdmissionStore {
       }
 
       const data = await response.json();
-      const current = Number(data?.result ?? 0);
+      if (!data || typeof data !== "object" || data.error) {
+        return {
+          allowed: false,
+          error: "store_unavailable",
+          message: data?.error ? `Upstash error: ${data.error}` : "Malformed rate limit response.",
+        };
+      }
+
+      if (data.result === null || data.result === undefined) {
+        return { allowed: true };
+      }
+
+      const current = Number(data.result);
+      if (isNaN(current)) {
+        return {
+          allowed: false,
+          error: "store_unavailable",
+          message: "Nonnumeric rate limit count returned from store.",
+        };
+      }
+
       if (current >= 5) {
         return {
           allowed: false,
@@ -256,7 +277,23 @@ export class UpstashRedisAdmissionStore implements JudgeAdmissionStore {
       }
 
       const data = await response.json();
-      const count = Number(data?.[0]?.result ?? 1);
+      if (!Array.isArray(data) || !data[0] || typeof data[0] !== "object" || data[0].error) {
+        return {
+          allowed: false,
+          error: "store_unavailable",
+          message: "Malformed or error response from pipeline.",
+        };
+      }
+
+      const count = Number(data[0].result);
+      if (isNaN(count)) {
+        return {
+          allowed: false,
+          error: "store_unavailable",
+          message: "Nonnumeric count in pipeline response.",
+        };
+      }
+
       if (count >= 5) {
         return {
           allowed: false,
@@ -306,22 +343,26 @@ export class UpstashRedisAdmissionStore implements JudgeAdmissionStore {
     `;
 
     try {
-      const endpoint = `${this.restUrl.replace(/\/$/, "")}/eval`;
+      // Documented Upstash REST EVAL format: POST to base endpoint with ["EVAL", script, numkeys, keys..., args...]
+      const endpoint = this.restUrl.replace(/\/$/, "");
+      const command = [
+        "EVAL",
+        luaScript,
+        2,
+        `mirai:judge:invite:${codeHash}`,
+        `mirai:judge:admitted_count`,
+        "2",
+        new Date().toISOString(),
+        judgeLabel,
+      ];
+
       const response = await this.customFetch(endpoint, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.restToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify([
-          luaScript,
-          2,
-          `mirai:judge:invite:${codeHash}`,
-          `mirai:judge:admitted_count`,
-          "2",
-          new Date().toISOString(),
-          judgeLabel,
-        ]),
+        body: JSON.stringify(command),
         signal: AbortSignal.timeout(5000),
       });
 
@@ -334,11 +375,11 @@ export class UpstashRedisAdmissionStore implements JudgeAdmissionStore {
       }
 
       const data = await response.json();
-      if (!data || typeof data !== "object") {
+      if (!data || typeof data !== "object" || data.error) {
         return {
           allowed: false,
           error: "store_unavailable",
-          message: "Malformed response from durable store. Default-deny enforced.",
+          message: data?.error ? `Upstash error: ${data.error}` : "Malformed response from durable store. Default-deny enforced.",
         };
       }
 
@@ -392,23 +433,27 @@ export class UpstashRedisAdmissionStore implements JudgeAdmissionStore {
         end
         return 0
       `;
-      const endpoint = `${this.restUrl.replace(/\/$/, "")}/eval`;
+      // Documented Upstash REST EVAL format: POST to base endpoint with ["EVAL", script, numkeys, keys...]
+      const endpoint = this.restUrl.replace(/\/$/, "");
+      const command = [
+        "EVAL",
+        luaScript,
+        2,
+        `mirai:judge:invite:${codeHash}`,
+        `mirai:judge:admitted_count`,
+      ];
       const response = await this.customFetch(endpoint, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.restToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify([
-          luaScript,
-          2,
-          `mirai:judge:invite:${codeHash}`,
-          `mirai:judge:admitted_count`,
-        ]),
+        body: JSON.stringify(command),
         signal: AbortSignal.timeout(5000),
       });
       if (!response.ok) return false;
       const data = await response.json();
+      if (!data || typeof data !== "object" || data.error) return false;
       return data.result === 1;
     } catch {
       return false;

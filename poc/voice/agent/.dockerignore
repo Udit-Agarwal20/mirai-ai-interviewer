@@ -1,9 +1,37 @@
-.venv
-__pycache__
-*.pyc
-.env*
+# Virtual environments
+.venv/
+venv/
+
+# Python bytecode and artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environment variables and secrets
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.cert
+
+# Project tests
 test_*.py
 tests/
-.git
-.github
-node_modules
+test/
+
+# VCS and editor files
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store
+
+# Temporary and build artifacts
+*.log
+.tmp
+.cache/
+coverage/
+node_modules/

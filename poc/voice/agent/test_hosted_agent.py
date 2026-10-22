@@ -1,3 +1,5 @@
+import sys
+import os
 """Offline unit tests for hosted agent configuration, limits, and behavior."""
 import asyncio
 import unittest
@@ -113,6 +115,27 @@ class TestHostedAgent(unittest.TestCase):
 
         asyncio.run(run_cleanup_test())
 
+
+
+    def test_safe_logging_and_check_flag(self):
+        import subprocess
+        agent_dir = os.path.dirname(__file__)
+        main_py = os.path.join(agent_dir, "hosted_main.py")
+        # Check flag failure without env
+        res = subprocess.run([sys.executable, main_py, "--check"], capture_output=True, text=True, cwd=agent_dir)
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("configuration check failed", res.stdout)
+
+        # Check flag success with minimal env
+        env = {
+            **os.environ,
+            "LIVEKIT_URL": "wss://test.livekit.cloud",
+            "LIVEKIT_API_KEY": "test-key",
+            "LIVEKIT_API_SECRET": "test-secret",
+        }
+        res2 = subprocess.run([sys.executable, main_py, "--check"], capture_output=True, text=True, env=env, cwd=agent_dir)
+        self.assertEqual(res2.returncode, 0)
+        self.assertIn("configuration valid", res2.stdout)
 
 if __name__ == "__main__":
     unittest.main()

@@ -159,17 +159,34 @@ export class JudgeLiveSession {
     }, 1000);
   }
 
-  private async remoteStop(roomName: string) {
-    if (!roomName) return;
+  private async remoteStop(roomName: string): Promise<boolean> {
+    if (!roomName) return true;
     try {
-      await this.request("/api/poc/judge/session", {
+      const response = await this.request("/api/poc/judge/session", {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ room: roomName }),
         keepalive: true,
         signal: AbortSignal.timeout(4000),
       });
-    } catch {}
+      if (!response.ok) {
+        let msg = "Room deletion could not be verified with voice provider. Server 60-second timer will enforce termination.";
+        try {
+          const errData = await response.json();
+          if (errData && typeof errData.message === "string") {
+            msg = errData.message;
+          }
+        } catch {}
+        if (this.state === "ended") {
+          this.transition("ended", `Interview ended locally. Notice: ${msg}`);
+        }
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async stop(reason: string = "Interview ended.", isError = false) {
